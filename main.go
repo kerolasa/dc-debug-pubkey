@@ -125,7 +125,7 @@ func main() {
 	if err != nil {
 		log.Warn().Err(err).Msg("could not indent json")
 	}
-	fmt.Println(string(out.Bytes()))
+	fmt.Println(out.String())
 }
 
 func getPrivateKey(pathToKey string) any {
@@ -193,7 +193,11 @@ func removeSigAndKey(input string) string {
 			if newParameters == "" {
 				amp = ""
 			}
-			newParameters = newParameters + amp + kv[0] + "=" + kv[1]
+			if len(kv) > 1 {
+				newParameters = newParameters + amp + kv[0] + "=" + kv[1]
+			} else {
+				newParameters = newParameters + amp + kv[0]
+			}
 		}
 	}
 	return newParameters
