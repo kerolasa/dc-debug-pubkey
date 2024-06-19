@@ -104,6 +104,11 @@ func main() {
 		}
 	}
 
+	// Domain Connect spec: The digital signature will be generated on
+	// the full query string only, excluding the sig and key parameters.
+	// This is everything after the ?, except the sig and key values.
+	toBeVerified.Hash = removeSigAndKey(toBeVerified.Hash)
+
 	// Get public key
 	publicKey := getPublicKey(toBeVerified.Domain)
 
@@ -172,6 +177,26 @@ func signPayload(key any, toBeVerified *PostData) {
 		log.Fatal().Msg("private key is not a rsa key")
 	}
 	toBeVerified.Sig = base64.StdEncoding.EncodeToString(signature)
+}
+
+func removeSigAndKey(input string) string {
+	queryParameters := strings.Split(input, "&")
+	newParameters := ""
+	for _, parameter := range queryParameters {
+		kv := strings.Split(parameter, "=")
+		switch kv[0] {
+		case "key", "sig":
+			log.Debug().Str("parameter", kv[0]).Msg("query string parameter removed")
+			continue
+		default:
+			amp := "&"
+			if newParameters == "" {
+				amp = ""
+			}
+			newParameters = newParameters + amp + kv[0] + "=" + kv[1]
+		}
+	}
+	return newParameters
 }
 
 type txtRecord struct {
