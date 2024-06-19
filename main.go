@@ -59,12 +59,14 @@ func main() {
 
 	// Command line options
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options] ./private_key.pem ./service-provider.template.json POST-data\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s ./service-provider.template.json ./private_key.pem raw-POST-data\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "       %s --postdata ./data.json ./service-provider.template.json\n", os.Args[0])
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "See also https://exampleservice.domainconnect.org/sig\n")
 	}
 	loglevel := flag.String("loglevel", "info", "loglevel can be one of: panic fatal error warn info debug trace")
 	sigHost := flag.String("key", "", "host prefix in syncPubKeyDomain, when empty the domain is queried")
+	postData := flag.String("postdata", "", "path to POST data json (omits need to have private key)")
 	flag.Parse()
 	level, err := zerolog.ParseLevel(*loglevel)
 	if err != nil {
@@ -72,31 +74,44 @@ func main() {
 	}
 	zerolog.SetGlobalLevel(level)
 
-	if n := flag.NArg(); n != 3 {
-		log.Fatal().Int("arguments", n).Msg("invalid number of arguments, please see --help outout for usage")
+	if flag.NArg() < 1 {
+		log.Fatal().Msg("service provider template not defined, please see --help outout for usage")
+	}
+	template := getTemplate(flag.Arg(0))
+	toBeVerified := PostData{
+		Domain: versionedHostName(template, *sigHost),
 	}
 
-	// Get input data
-	privateKey := getPrivateKey(flag.Arg(0))
-	template := getTemplate(flag.Arg(1))
+	if *postData == "" {
+		if n := flag.NArg(); n != 3 {
+			log.Fatal().Int("arguments", n).Msg("invalid number of arguments, please see --help outout for usage")
+		}
 
-	// Sign payload
-	signed := signPayload(privateKey, flag.Arg(2))
+		// Get input data
+		privateKey := getPrivateKey(flag.Arg(1))
+
+		// Sign payload
+		toBeVerified.Hash = flag.Arg(2)
+		signPayload(privateKey, &toBeVerified)
+	} else {
+		postBytes, err := os.ReadFile(*postData)
+		if err != nil {
+			log.Fatal().Err(err).Str("path", *postData).Msg("could not read file")
+		}
+		err = json.Unmarshal(postBytes, &toBeVerified)
+		if err != nil {
+			log.Fatal().Err(err).Str("path", *postData).Msg("could not unmarshal json")
+		}
+	}
 
 	// Get public key
-	dnsName := versionedHostName(template, *sigHost)
-	publicKey := getPublicKey(dnsName)
+	publicKey := getPublicKey(toBeVerified.Domain)
 
 	// Verify
-	checkSignature(publicKey, signed, flag.Arg(2))
+	checkSignature(publicKey, toBeVerified)
 
 	// Print POST data that would be sent DNS Provider
-	output := PostData{
-		Domain: dnsName,
-		Sig:    signed,
-		Hash:   flag.Arg(2),
-	}
-	marshaled, err := json.Marshal(output)
+	marshaled, err := json.Marshal(toBeVerified)
 	if err != nil {
 		log.Warn().Err(err).Msg("could not marshal json")
 	}
@@ -139,10 +154,10 @@ func getTemplate(pathToTemplate string) Template {
 	return template
 }
 
-func signPayload(key any, postData string) string {
+func signPayload(key any, toBeVerified *PostData) {
 	log.Debug().Msg("signing payload")
 	msgHash := sha256.New()
-	_, err := msgHash.Write([]byte(postData))
+	_, err := msgHash.Write([]byte(toBeVerified.Hash))
 	if err != nil {
 		log.Fatal().Err(err).Msg("could not hash post data")
 	}
@@ -156,7 +171,7 @@ func signPayload(key any, postData string) string {
 	} else {
 		log.Fatal().Msg("private key is not a rsa key")
 	}
-	return base64.StdEncoding.EncodeToString(signature)
+	toBeVerified.Sig = base64.StdEncoding.EncodeToString(signature)
 }
 
 type txtRecord struct {
@@ -236,13 +251,13 @@ func getPublicKey(dnsName string) rsa.PublicKey {
 	return *x509parsed.(*rsa.PublicKey)
 }
 
-func checkSignature(publicKey rsa.PublicKey, signed string, postData string) {
+func checkSignature(publicKey rsa.PublicKey, toBeVerified PostData) {
 	log.Debug().Msg("checking signature")
-	binarySig, err := base64.StdEncoding.DecodeString(signed)
+	binarySig, err := base64.StdEncoding.DecodeString(toBeVerified.Sig)
 	if err != nil {
 		log.Fatal().Err(err).Msg("could not base64 decode")
 	}
-	hashed := sha256.Sum256([]byte(postData))
+	hashed := sha256.Sum256([]byte(toBeVerified.Hash))
 	err = rsa.VerifyPKCS1v15(&publicKey, crypto.SHA256, hashed[:], binarySig)
 	if err != nil {
 		log.Error().Err(err).Msg("verify public key failed")
