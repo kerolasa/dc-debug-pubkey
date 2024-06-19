@@ -113,6 +113,9 @@ func getPrivateKey(pathToKey string) any {
 		log.Fatal().Err(err).Str("path", pathToKey).Msg("could not read file")
 	}
 	keyBlock, _ := pem.Decode(keyBytes)
+	if keyBlock == nil {
+		log.Fatal().Err(err).Str("path", pathToKey).Msg("could not decode private key")
+	}
 	key, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
 	if err != nil {
 		log.Fatal().Err(err).Str("path", pathToKey).Msg("could not parse private key")
