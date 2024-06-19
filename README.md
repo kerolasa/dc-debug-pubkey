@@ -4,7 +4,7 @@ This tool aims to help Domain Connect service providers to debug syncPubKeyDomai
 setup.  Typical usage should look something like below.
 
 ```
-go install github.com/Domain-Connect/dc-debug-pubkey@latest
+go install github.com/kerolasa/dc-debug-pubkey@latest
 $GOPATH/dc-debug-pubkey ./private_key.pem ./exampleservice.domainconnect.org.template1.json hash-payload-in-the-POST-data
 ```
 
