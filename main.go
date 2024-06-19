@@ -59,11 +59,12 @@ func main() {
 
 	// Command line options
 	flag.Usage = func() {
-		_, _ = fmt.Fprintf(os.Stderr, "Usage: %s [options] ./private_key.pem ./exampleservice.domainconnect.org.template1.json hash-payload-in-the-POST-data\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [options] ./private_key.pem ./service-provider.template.json POST-data\n", os.Args[0])
 		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "See also https://exampleservice.domainconnect.org/sig")
+		fmt.Fprintf(os.Stderr, "See also https://exampleservice.domainconnect.org/sig\n")
 	}
 	loglevel := flag.String("loglevel", "info", "loglevel can be one of: panic fatal error warn info debug trace")
+	sigHost := flag.String("key", "", "host prefix in syncPubKeyDomain, when empty the domain is queried")
 	flag.Parse()
 	level, err := zerolog.ParseLevel(*loglevel)
 	if err != nil {
@@ -71,8 +72,8 @@ func main() {
 	}
 	zerolog.SetGlobalLevel(level)
 
-	if flag.NArg() != 3 {
-		log.Fatal().Msg("invalid number of arguments, please see --help outout for usage")
+	if n := flag.NArg(); n != 3 {
+		log.Fatal().Int("arguments", n).Msg("invalid number of arguments, please see --help outout for usage")
 	}
 
 	// Get input data
@@ -83,14 +84,15 @@ func main() {
 	signed := signPayload(privateKey, flag.Arg(2))
 
 	// Get public key
-	publicKey := getPublicKey(template)
+	dnsName := versionedHostName(template, *sigHost)
+	publicKey := getPublicKey(dnsName)
 
 	// Verify
 	checkSignature(publicKey, signed, flag.Arg(2))
 
 	// Print POST data that would be sent DNS Provider
 	output := PostData{
-		Domain: template.SyncPubKeyDomain,
+		Domain: dnsName,
 		Sig:    signed,
 		Hash:   flag.Arg(2),
 	}
@@ -162,11 +164,19 @@ type txtRecord struct {
 	d string
 }
 
-func getPublicKey(template Template) rsa.PublicKey {
+func versionedHostName(template Template, host string) string {
+	dnsName := template.SyncPubKeyDomain
+	if host != "" {
+		dnsName = host + "." + template.SyncPubKeyDomain
+	}
+	return dnsName
+}
+
+func getPublicKey(dnsName string) rsa.PublicKey {
 	log.Debug().Msg("reading public key from DNS")
-	txt, err := net.LookupTXT(template.SyncPubKeyDomain)
+	txt, err := net.LookupTXT(dnsName)
 	if err != nil {
-		log.Fatal().Err(err).Str("syncPubKeyDomain", template.SyncPubKeyDomain).Msg("public key txt lookup failed")
+		log.Fatal().Err(err).Str("domain", dnsName).Msg("public key txt lookup failed")
 	}
 
 	var allRecords []txtRecord
@@ -213,14 +223,14 @@ func getPublicKey(template Template) rsa.PublicKey {
 	// Extract certificate
 	block, _ := pem.Decode([]byte(pubkeyBase64))
 	if block == nil {
-		log.Fatal().Str("domain", template.SyncPubKeyDomain).Msg("public key pem decode failed")
+		log.Fatal().Str("domain", dnsName).Msg("public key pem decode failed")
 	}
 	x509parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		log.Fatal().Err(err).Str("domain", template.SyncPubKeyDomain).Msg("public key x509 decode failed")
+		log.Fatal().Err(err).Str("domain", dnsName).Msg("public key x509 decode failed")
 	}
 	if x509parsed.(*rsa.PublicKey) == nil {
-		log.Fatal().Str("domain", template.SyncPubKeyDomain).Msg("public key does not have rsa key")
+		log.Fatal().Str("domain", dnsName).Msg("public key does not have rsa key")
 	}
 
 	return *x509parsed.(*rsa.PublicKey)
