@@ -1,0 +1,16 @@
+{
+  "providerId": "cloudflare",
+  "providerName": "Cloudflare",
+  "serviceId": "staging",
+  "serviceName": "Staging test template",
+  "version": 1,
+  "syncPubKeyDomain": "domainconnect-DNS-4310-staging.lavington25.com",
+  "records": [
+    {
+      "type": "CNAME",
+      "host": "fake-template.lavington25.com.",
+      "pointsTo": "staging-test-domainconnect-api.lavington25.com.",
+      "ttl": 300
+    }
+  ]
+}

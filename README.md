@@ -6,8 +6,8 @@ setup.  Typical usage should look something like below.
 ```
 go install github.com/kerolasa/dc-debug-pubkey@latest
 $GOPATH/dc-debug-pubkey --help
-Usage: ./dc-debug-pubkey ./service-provider.template.json ./private_key.pem raw-POST-data
-       ./dc-debug-pubkey --postdata ./data.json ./service-provider.template.json
+Usage: ./dc-debug-pubkey ./example.template.json ./example.private-key.pem 'VTxLc7lHPIJ2HnTVI0UvlCY8dTeomjujk6I9H2T6rupu8toH045SvnuPIY89yXd'
+       ./dc-debug-pubkey --loglevel debug --postdata ./example.post.json ./example.template.json
   -key string
         host prefix in syncPubKeyDomain, when empty the domain is queried
   -loglevel string

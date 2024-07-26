@@ -59,8 +59,8 @@ func main() {
 
 	// Command line options
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s ./service-provider.template.json ./private_key.pem raw-POST-data\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "       %s --postdata ./data.json ./service-provider.template.json\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s ./example.template.json ./example.private-key.pem 'VTxLc7lHPIJ2HnTVI0UvlCY8dTeomjujk6I9H2T6rupu8toH045SvnuPIY89yXd'\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "       %s --loglevel debug --postdata ./example.post.json ./example.template.json\n", os.Args[0])
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "See also https://exampleservice.domainconnect.org/sig\n")
 	}
