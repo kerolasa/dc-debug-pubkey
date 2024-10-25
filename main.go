@@ -217,37 +217,38 @@ func versionedHostName(template Template, host string) string {
 }
 
 func getPublicKey(dnsName string) rsa.PublicKey {
-	log.Debug().Msg("reading public key from DNS")
+	txtLog := log.With().Str("record", dnsName).Logger()
+	txtLog.Debug().Msg("reading public key from DNS")
 	txt, err := net.LookupTXT(dnsName)
 	if err != nil {
-		log.Fatal().Err(err).Str("domain", dnsName).Msg("public key txt lookup failed")
+		txtLog.Fatal().Err(err).Msg("public key txt lookup failed")
 	}
 
 	var allRecords []txtRecord
 	for _, r := range txt {
 		var record txtRecord
 
-		log.Debug().Str("txt", r).Msg("process txt record")
+		txtLog.Debug().Str("txt", r).Msg("process txt record")
 		fields := strings.Split(r, ",")
 		for _, item := range fields {
 			switch item[0] {
 			case 'p':
 				record.p, err = strconv.Atoi(item[2:])
 				if err != nil {
-					log.Fatal().Err(err).Str("item", item[2:]).Msg("invalid number in txt record")
+					txtLog.Fatal().Err(err).Str("item", item[2:]).Msg("invalid number in txt record")
 				}
 			case 'a':
 				if item[2:] != "RS256" {
-					log.Fatal().Str("algorithm", item[2:]).Msg("unexpected algorithm in txt record")
+					txtLog.Fatal().Str("algorithm", item[2:]).Msg("unexpected algorithm in txt record")
 				}
 			case 't':
 				if item[2:] != "x509" {
-					log.Fatal().Str("keytoken", item[2:]).Msg("unexpected key token in txt record")
+					txtLog.Fatal().Str("keytoken", item[2:]).Msg("unexpected key token in txt record")
 				}
 			case 'd':
 				record.d = item[2:]
 			default:
-				log.Warn().Str("item", item).Msg("unexpected data in txt record")
+				txtLog.Warn().Str("item", item).Msg("unexpected data in txt record")
 			}
 		}
 		allRecords = append(allRecords, record)
@@ -267,14 +268,14 @@ func getPublicKey(dnsName string) rsa.PublicKey {
 	// Extract certificate
 	block, _ := pem.Decode([]byte(pubkeyBase64))
 	if block == nil {
-		log.Fatal().Str("domain", dnsName).Msg("public key pem decode failed")
+		txtLog.Fatal().Msg("public key pem decode failed")
 	}
 	x509parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		log.Fatal().Err(err).Str("domain", dnsName).Msg("public key x509 decode failed")
+		txtLog.Fatal().Err(err).Msg("public key x509 decode failed")
 	}
 	if x509parsed.(*rsa.PublicKey) == nil {
-		log.Fatal().Str("domain", dnsName).Msg("public key does not have rsa key")
+		txtLog.Fatal().Msg("public key does not have rsa key")
 	}
 
 	return *x509parsed.(*rsa.PublicKey)
