@@ -1,6 +1,6 @@
 module github.com/kerolasa/dc-debug-pubkey
 
-go 1.22.4
+go 1.23.0
 
 require (
 	github.com/mattn/go-isatty v0.0.20
@@ -8,6 +8,6 @@ require (
 )
 
 require (
-	github.com/mattn/go-colorable v0.1.13 // indirect
-	golang.org/x/sys v0.27.0 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	golang.org/x/sys v0.31.0 // indirect
 )
