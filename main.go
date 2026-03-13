@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -37,48 +38,23 @@ type PostData struct {
 	Hash   string `json:"hash"`
 }
 
-type AlgType uint8
+// sigScheme identifies the signature algorithm family.
+type sigScheme int
 
 const (
-	RS256 AlgType = iota // RSA Signature (the default)
-	RS384
-	RS512
-	PS256 // Probabilistic Signature Scheme
-	PS384
-	PS512
-	ES256 // Elliptic Curve Digital Signature
-	ES384
-	ES512
-	Ed25519 // Edwards-curve Digital Signature
-	Ed448
+	schemeUnknown  sigScheme = iota
+	schemeRSAPKCS1           // RS256, RS384, RS512
+	schemeRSAPSS             // PS256, PS384, PS512
+	schemeECDSA              // ES256, ES384, ES512
+	schemeEd25519            // Ed25519
 )
 
-func (a AlgType) Name() string {
-	switch a {
-	case RS256:
-		return "RS256"
-	case RS384:
-		return "RS384"
-	case RS512:
-		return "RS512"
-	case PS256:
-		return "PS256"
-	case PS384:
-		return "PS384"
-	case PS512:
-		return "PS512"
-	case ES256:
-		return "ES256"
-	case ES384:
-		return "ES384"
-	case ES512:
-		return "ES512"
-	case Ed25519:
-		return "Ed25519"
-	case Ed448:
-		return "Ed448"
-	}
-	return "unknown"
+// cachedCert bundles a public key with the signature scheme and hash algorithm
+// declared by the provider's DNS TXT record.
+type cachedCert struct {
+	key    crypto.PublicKey
+	scheme sigScheme
+	hash   crypto.Hash // not used for Ed25519
 }
 
 /*
@@ -156,10 +132,10 @@ func main() {
 	toBeVerified.Hash = removeSigAndKey(toBeVerified.Hash)
 
 	// Get public key
-	publicKeys := getPublicKey(toBeVerified.Domain)
+	cert := getPublicKey(toBeVerified.Domain)
 
 	// Verify
-	checkSignature(publicKeys, toBeVerified)
+	checkSignature(cert, toBeVerified)
 
 	// Print POST data that would be sent DNS Provider
 	marshaled, err := json.Marshal(toBeVerified)
@@ -183,7 +159,6 @@ func getPrivateKey(pathToKey string) any {
 	keyBlock, _ := pem.Decode(keyBytes)
 	if keyBlock == nil {
 		log.Fatal().Err(err).Str("path", pathToKey).Msg("could not decode private key")
-		panic("fatal did not terminate") // staticcheck SA5011 goaround
 	}
 	key, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
 	if err != nil {
@@ -206,22 +181,48 @@ func getTemplate(pathToTemplate string) Template {
 	return template
 }
 
+// hashData returns the digest of data using the given hash algorithm.
+// Supports crypto.SHA256, crypto.SHA384, and crypto.SHA512.
+func hashData(h crypto.Hash, data []byte) []byte {
+	switch h {
+	case crypto.SHA384:
+		d := sha512.Sum384(data)
+		return d[:]
+	case crypto.SHA512:
+		d := sha512.Sum512(data)
+		return d[:]
+	default:
+		d := sha256.Sum256(data)
+		return d[:]
+	}
+}
+
 func signPayload(key any, toBeVerified *PostData) {
 	log.Debug().Msg("signing payload")
-	msgHash := sha256.New()
-	_, err := msgHash.Write([]byte(toBeVerified.Hash))
-	if err != nil {
-		log.Fatal().Err(err).Msg("could not hash post data")
-	}
-	hashSum := msgHash.Sum(nil)
-	var signature []byte
-	if privateKey, ok := key.(*rsa.PrivateKey); ok {
-		signature, err = rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashSum)
+	var (
+		signature []byte
+		err       error
+	)
+	switch k := key.(type) {
+	case *rsa.PrivateKey:
+		hashed := sha256.Sum256([]byte(toBeVerified.Hash))
+		signature, err = rsa.SignPKCS1v15(rand.Reader, k, crypto.SHA256, hashed[:])
 		if err != nil {
 			log.Fatal().Err(err).Msg("could not sign post data")
 		}
-	} else {
-		log.Fatal().Msg("private key is not a rsa key")
+	case *ecdsa.PrivateKey:
+		hashed := sha256.Sum256([]byte(toBeVerified.Hash))
+		signature, err = ecdsa.SignASN1(rand.Reader, k, hashed[:])
+		if err != nil {
+			log.Fatal().Err(err).Msg("could not sign post data")
+		}
+	case ed25519.PrivateKey:
+		signature, err = k.Sign(rand.Reader, []byte(toBeVerified.Hash), crypto.Hash(0))
+		if err != nil {
+			log.Fatal().Err(err).Msg("could not sign post data")
+		}
+	default:
+		log.Fatal().Msg("unsupported private key type")
 	}
 	toBeVerified.Sig = base64.StdEncoding.EncodeToString(signature)
 }
@@ -263,37 +264,7 @@ func versionedHostName(template Template, host string) string {
 	return dnsName
 }
 
-func getAlg(alg string) AlgType {
-	switch alg {
-	case "RS256":
-		return RS256
-	case "RS384":
-		return RS384
-	case "RS512":
-		return RS512
-	case "PS256":
-		return PS256
-	case "PS384":
-		return PS384
-	case "PS512":
-		return PS512
-	case "ES256":
-		return ES256
-	case "ES384":
-		return ES384
-	case "ES512":
-		return ES512
-	case "Ed25519":
-		return Ed25519
-	case "Ed448":
-		return Ed448
-	default:
-		log.Fatal().Str("algorithm", alg).Msg("unexpected algorithm in txt record")
-	}
-	return RS256
-}
-
-func getPublicKey(dnsName string) map[AlgType][]byte {
+func getPublicKey(dnsName string) cachedCert {
 	txtLog := log.With().Str("record", dnsName).Logger()
 	txtLog.Debug().Msg("reading public key from DNS")
 	txt, err := net.LookupTXT(dnsName)
@@ -301,22 +272,83 @@ func getPublicKey(dnsName string) map[AlgType][]byte {
 		txtLog.Fatal().Err(err).Msg("public key txt lookup failed")
 	}
 
-	allRecords := make(map[AlgType][]txtRecord)
+	if len(txt) == 0 {
+		txtLog.Fatal().Msg("txt lookup returned no records")
+	}
+
+	var allRecords []txtRecord
+	hashAlg := crypto.SHA256 // default; overridden by 'a=' field
+	scheme := schemeUnknown  // default; overridden by 'a=' field
+	uniqP := make(map[int]bool)
 	for _, r := range txt {
+		if r == "" {
+			txtLog.Fatal().Msg("empty txt record")
+		}
 		var record txtRecord
+		pSeen := false
 
 		txtLog.Debug().Str("txt", r).Msg("process txt record")
 		fields := strings.Split(r, ",")
-		var alg AlgType
 		for _, item := range fields {
+			if len(item) < 2 {
+				txtLog.Fatal().Str("item", item).Msg("txt record token too short")
+			}
+			if item[1] != '=' {
+				txtLog.Fatal().Str("item", item).Msg("txt record token missing '='")
+			}
 			switch item[0] {
 			case 'p':
 				record.p, err = strconv.Atoi(item[2:])
 				if err != nil {
 					txtLog.Fatal().Err(err).Str("item", item[2:]).Msg("invalid number in txt record")
 				}
+				if _, found := uniqP[record.p]; found {
+					txtLog.Fatal().Int("p", record.p).Msg("duplicate p number value")
+				}
+				uniqP[record.p] = true
+				pSeen = true
 			case 'a':
-				alg = getAlg(item[2:])
+				var newHashAlg crypto.Hash
+				var newScheme sigScheme
+				switch item[2:] {
+				case "RS256":
+					newHashAlg = crypto.SHA256
+					newScheme = schemeRSAPKCS1
+				case "RS384":
+					newHashAlg = crypto.SHA384
+					newScheme = schemeRSAPKCS1
+				case "RS512":
+					newHashAlg = crypto.SHA512
+					newScheme = schemeRSAPKCS1
+				case "PS256":
+					newHashAlg = crypto.SHA256
+					newScheme = schemeRSAPSS
+				case "PS384":
+					newHashAlg = crypto.SHA384
+					newScheme = schemeRSAPSS
+				case "PS512":
+					newHashAlg = crypto.SHA512
+					newScheme = schemeRSAPSS
+				case "ES256":
+					newHashAlg = crypto.SHA256
+					newScheme = schemeECDSA
+				case "ES384":
+					newHashAlg = crypto.SHA384
+					newScheme = schemeECDSA
+				case "ES512":
+					newHashAlg = crypto.SHA512
+					newScheme = schemeECDSA
+				case "Ed25519":
+					newHashAlg = 0
+					newScheme = schemeEd25519
+				default:
+					txtLog.Fatal().Str("algorithm", item[2:]).Msg("unexpected algorithm in txt record")
+				}
+				if scheme != schemeUnknown && (scheme != newScheme || hashAlg != newHashAlg) {
+					txtLog.Fatal().Str("algorithm", item[2:]).Msg("algorithm mismatch across txt records")
+				}
+				hashAlg = newHashAlg
+				scheme = newScheme
 			case 't':
 				if item[2:] != "x509" {
 					txtLog.Fatal().Str("keytoken", item[2:]).Msg("unexpected key token in txt record")
@@ -324,132 +356,101 @@ func getPublicKey(dnsName string) map[AlgType][]byte {
 			case 'd':
 				record.d = item[2:]
 			default:
-				txtLog.Warn().Str("item", item).Msg("unexpected data in txt record")
+				txtLog.Fatal().Str("item", item).Msg("unexpected data in txt record")
 			}
 		}
-		list := allRecords[alg]
-		list = append(list, record)
-		allRecords[alg] = list
+		if !pSeen {
+			txtLog.Fatal().Str("fragment", r).Msg("txt record fragment missing p= field")
+		}
+		if record.d == "" {
+			txtLog.Fatal().Str("fragment", r).Msg("txt record fragment missing d= field or d= is empty")
+		}
+		allRecords = append(allRecords, record)
+	}
+	if scheme == schemeUnknown {
+		txtLog.Fatal().Msg("txt record does not define a=scheme")
+	}
+	if len(allRecords) == 0 {
+		txtLog.Fatal().Msg("txt records contain no usable key data")
 	}
 
-	// The return value
-	keyMap := make(map[AlgType][]byte)
+	// DNS can and will provide records in random order, sort them
+	sort.Slice(allRecords, func(i, j int) bool { return allRecords[i].p < allRecords[j].p })
 
-	for alg, list := range allRecords {
-		// DNS can and will provide records in random order, sort them
-		sort.Slice(list, func(i, j int) bool {
-			return list[i].p < list[j].p
-		})
-
-		// Convert the text record to pem format
-		var pubkeyBase64 string
-		pubkeyBase64 = "-----BEGIN PUBLIC KEY-----\n"
-		for i := range list {
-			pubkeyBase64 += list[i].d
+	// Convert the text record to pem format
+	var pubkeyBase64 string
+	pubkeyBase64 = "-----BEGIN PUBLIC KEY-----\n"
+	for i := range allRecords {
+		if allRecords[i].d == "" {
+			txtLog.Fatal().Int("p", allRecords[i].p).Msg("key fragment has empty d= value")
 		}
-		pubkeyBase64 += "\n-----END PUBLIC KEY-----\n"
+		pubkeyBase64 += allRecords[i].d
+	}
+	pubkeyBase64 += "\n-----END PUBLIC KEY-----\n"
 
-		// Extract certificate
-		block, _ := pem.Decode([]byte(pubkeyBase64))
-		if block == nil {
-			txtLog.Fatal().Msg("public key pem decode failed")
-			panic("fatal did not terminate") // staticcheck SA5011 goaround
-		}
-		keyMap[alg] = block.Bytes
+	// Extract certificate
+	block, _ := pem.Decode([]byte(pubkeyBase64))
+	if block == nil {
+		txtLog.Fatal().Msg("public key pem decode failed")
+	}
+	x509parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		txtLog.Fatal().Err(err).Msg("public key x509 decode failed")
 	}
 
-	return keyMap
+	var pubKey crypto.PublicKey
+	switch parsedKey := x509parsed.(type) {
+	case *rsa.PublicKey:
+		if scheme != schemeRSAPKCS1 && scheme != schemeRSAPSS {
+			txtLog.Fatal().Msg("RSA key used with non-RSA algorithm")
+		}
+		pubKey = parsedKey
+	case *ecdsa.PublicKey:
+		if scheme != schemeECDSA {
+			txtLog.Fatal().Msg("ECDSA key used with non-ECDSA algorithm")
+		}
+		pubKey = parsedKey
+	case ed25519.PublicKey:
+		if scheme != schemeEd25519 {
+			txtLog.Fatal().Msg("Ed25519 key used with non-Ed25519 algorithm")
+		}
+		pubKey = parsedKey
+	default:
+		txtLog.Fatal().Msg("unsupported public key type")
+	}
+
+	return cachedCert{key: pubKey, scheme: scheme, hash: hashAlg}
 }
 
-func checkSignature(publicKeys map[AlgType][]byte, toBeVerified PostData) {
+func checkSignature(cert cachedCert, toBeVerified PostData) {
 	log.Debug().Msg("checking signature")
 	binarySig, err := base64.StdEncoding.DecodeString(toBeVerified.Sig)
 	if err != nil {
 		log.Fatal().Err(err).Msg("could not base64 decode")
 	}
-	hashed := sha256.Sum256([]byte(toBeVerified.Hash))
 
-	verifyOK := false
-
-	for alg, publicKey := range publicKeys {
-		algLog := log.With().Str("alg", alg.Name()).Logger()
-
-		x509parsed, err := x509.ParsePKIXPublicKey(publicKey)
-		if err != nil {
-			algLog.Fatal().Err(err).Msg("public key x509 decode failed")
-		}
-
-		hash := crypto.SHA256
-		switch alg {
-		case RS384, PS384, ES384:
-			hash = crypto.SHA384
-		case RS512, PS512, ES512:
-			hash = crypto.SHA512
-		}
-
-		switch alg {
-		case RS256, RS384, RS512:
-			if x509parsed.(*rsa.PublicKey) == nil {
-				algLog.Fatal().Msg("public key does not have key")
-				continue
-			}
-			err = rsa.VerifyPKCS1v15(x509parsed.(*rsa.PublicKey), hash, hashed[:], binarySig)
-			if err != nil {
-				algLog.Error().Err(err).Msg("verify public key failed")
-			} else {
-				verifyOK = true
-				algLog.Debug().Msg("verify ok")
-				goto loopDone
-			}
-
-		case PS256, PS384, PS512:
-			if x509parsed.(*rsa.PublicKey) == nil {
-				algLog.Fatal().Msg("public key does not have key")
-				continue
-			}
-			err = rsa.VerifyPSS(x509parsed.(*rsa.PublicKey), hash, hashed[:], binarySig, nil)
-			if err != nil {
-				algLog.Error().Err(err).Msg("verify public key failed")
-			} else {
-				verifyOK = true
-				algLog.Debug().Msg("verify ok")
-				goto loopDone
-			}
-
-		case ES256, ES384, ES512:
-			if x509parsed.(*ecdsa.PublicKey) == nil {
-				algLog.Fatal().Msg("public key does not have key")
-			}
-			ok := ecdsa.VerifyASN1(x509parsed.(*ecdsa.PublicKey), hashed[:], binarySig)
-			if !ok {
-				algLog.Error().Err(err).Msg("verify public key failed")
-			} else {
-				verifyOK = true
-				algLog.Debug().Msg("verify ok")
-				goto loopDone
-			}
-
-		case Ed25519, Ed448:
-			if x509parsed.(*ed25519.PublicKey) == nil {
-				algLog.Fatal().Msg("public key does not have key")
-			}
-			ok := ed25519.Verify(*x509parsed.(*ed25519.PublicKey), hashed[:], binarySig)
-			if !ok {
-				algLog.Error().Err(err).Msg("verify public key failed")
-			} else {
-				verifyOK = true
-				algLog.Debug().Msg("verify ok")
-				goto loopDone
-			}
-
-		default:
-			algLog.Fatal().Msg("unexpected verification algorithm")
-		}
+	var ok bool
+	switch cert.scheme {
+	case schemeRSAPKCS1:
+		key, _ := cert.key.(*rsa.PublicKey)
+		hashed := hashData(cert.hash, []byte(toBeVerified.Hash))
+		ok = rsa.VerifyPKCS1v15(key, cert.hash, hashed, binarySig) == nil
+	case schemeRSAPSS:
+		key, _ := cert.key.(*rsa.PublicKey)
+		hashed := hashData(cert.hash, []byte(toBeVerified.Hash))
+		ok = rsa.VerifyPSS(key, cert.hash, hashed, binarySig, nil) == nil
+	case schemeECDSA:
+		key, _ := cert.key.(*ecdsa.PublicKey)
+		hashed := hashData(cert.hash, []byte(toBeVerified.Hash))
+		ok = ecdsa.VerifyASN1(key, hashed, binarySig)
+	case schemeEd25519:
+		key, _ := cert.key.(ed25519.PublicKey)
+		ok = ed25519.Verify(key, []byte(toBeVerified.Hash), binarySig)
+	default:
+		log.Fatal().Msg("unsupported signature scheme")
 	}
 
-loopDone:
-
-	if !verifyOK {
-		log.Error().Msg("verification failed")
+	if !ok {
+		log.Error().Msg("verify public key failed")
 	}
 }
