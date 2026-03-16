@@ -264,6 +264,8 @@ func versionedHostName(template Template, host string) string {
 	return dnsName
 }
 
+const maxtxtlen = 255
+
 func getPublicKey(dnsName string) cachedCert {
 	txtLog := log.With().Str("record", dnsName).Logger()
 	txtLog.Debug().Msg("reading public key from DNS")
@@ -283,6 +285,9 @@ func getPublicKey(dnsName string) cachedCert {
 	for _, r := range txt {
 		if r == "" {
 			txtLog.Fatal().Msg("empty txt record")
+		}
+		if maxtxtlen < len(r) {
+			txtLog.Warn().Int("length", len(r)).Int("max", maxtxtlen).Msg("txt record is not split to short enough p= chunks")
 		}
 		var record txtRecord
 		pSeen := false
