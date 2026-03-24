@@ -97,7 +97,7 @@ func main() {
 	zerolog.SetGlobalLevel(level)
 
 	if flag.NArg() < 1 {
-		log.Fatal().Msg("service provider template not defined, please see --help outout for usage")
+		log.Fatal().Msg("service provider template not defined, please see --help output for usage")
 	}
 	template := getTemplate(flag.Arg(0))
 	toBeVerified := PostData{
@@ -106,7 +106,7 @@ func main() {
 
 	if *postData == "" {
 		if n := flag.NArg(); n != 3 {
-			log.Fatal().Int("arguments", n).Msg("invalid number of arguments, please see --help outout for usage")
+			log.Fatal().Int("arguments", n).Msg("invalid number of arguments, please see --help output for usage")
 		}
 
 		// Get input data
