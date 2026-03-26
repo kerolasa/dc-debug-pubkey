@@ -83,18 +83,26 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ./example.template.json ./example.private-key.pem 'VTxLc7lHPIJ2HnTVI0UvlCY8dTeomjujk6I9H2T6rupu8toH045SvnuPIY89yXd'\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "       %s --loglevel debug --postdata ./example.post.json ./example.template.json\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "       %s --loglevel debug --dns _dckey.example.com\n", os.Args[0])
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "See also https://exampleservice.domainconnect.org/sig\n")
 	}
 	loglevel := flag.String("loglevel", "info", "loglevel can be one of: panic fatal error warn info debug trace")
 	sigHost := flag.String("key", "", "host prefix in syncPubKeyDomain, when empty the domain is queried")
 	postData := flag.String("postdata", "", "path to POST data json (omits need to have private key)")
+	dnsOnly := flag.String("dns", "", "validate only the TXT record")
 	flag.Parse()
 	level, err := zerolog.ParseLevel(*loglevel)
 	if err != nil {
 		log.Fatal().Err(err).Msg("invalid loglevel")
 	}
 	zerolog.SetGlobalLevel(level)
+
+	if *dnsOnly != "" {
+		_ = getPublicKey(*dnsOnly)
+		log.Info().Str("dns", *dnsOnly).Msg("record is ok")
+		os.Exit(0)
+	}
 
 	if flag.NArg() < 1 {
 		log.Fatal().Msg("service provider template not defined, please see --help output for usage")
