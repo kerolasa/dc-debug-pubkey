@@ -8,6 +8,9 @@ go install github.com/kerolasa/dc-debug-pubkey@latest
 $GOPATH/dc-debug-pubkey --help
 Usage: ./dc-debug-pubkey ./example.template.json ./example.private-key.pem 'VTxLc7lHPIJ2HnTVI0UvlCY8dTeomjujk6I9H2T6rupu8toH045SvnuPIY89yXd'
        ./dc-debug-pubkey --loglevel debug --postdata ./example.post.json ./example.template.json
+       ./dc-debug-pubkey --loglevel debug --dns _dckey.example.com
+  -dns string
+        validate only the TXT record
   -key string
         host prefix in syncPubKeyDomain, when empty the domain is queried
   -loglevel string
