@@ -74,8 +74,8 @@ func main() {
 			},
 		)
 	}
-	zerolog.CallerMarshalFunc = func(_ uintptr, file string, line int) string {
-		return file + ":" + strconv.Itoa(line)
+	zerolog.CallerMarshalFunc = func(_ uintptr, _ string, line int) string {
+		return "main.go:" + strconv.Itoa(line)
 	}
 	log.Logger = log.With().Caller().Logger()
 
