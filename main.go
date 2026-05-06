@@ -90,7 +90,7 @@ func main() {
 	loglevel := flag.String("loglevel", "info", "loglevel can be one of: panic fatal error warn info debug trace")
 	sigHost := flag.String("key", "", "host prefix in syncPubKeyDomain, when empty the domain is queried")
 	postData := flag.String("postdata", "", "path to POST data json (omits need to have private key)")
-	dnsOnly := flag.String("dns", "", "validate only the TXT record")
+	dnsOnly := flag.Bool("dns", false, "validate only the TXT record")
 	flag.Parse()
 	level, err := zerolog.ParseLevel(*loglevel)
 	if err != nil {
@@ -98,9 +98,11 @@ func main() {
 	}
 	zerolog.SetGlobalLevel(level)
 
-	if *dnsOnly != "" {
-		_ = getPublicKey(*dnsOnly)
-		log.Info().Str("dns", *dnsOnly).Msg("record is ok")
+	if *dnsOnly {
+		for _, a := range flag.Args() {
+			_ = getPublicKey(a)
+			log.Info().Str("dns", a).Msg("record is ok")
+		}
 		os.Exit(0)
 	}
 
