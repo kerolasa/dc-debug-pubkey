@@ -99,11 +99,18 @@ func main() {
 	zerolog.SetGlobalLevel(level)
 
 	if *dnsOnly {
+		ok := true
 		for _, a := range flag.Args() {
-			_ = getPublicKey(a)
-			log.Info().Str("dns", a).Msg("record is ok")
+			_, failed := getPublicKey(a)
+			if !failed {
+				log.Info().Str("dns", a).Msg("record is ok")
+				ok = false
+			}
 		}
-		os.Exit(0)
+		if ok {
+			os.Exit(0)
+		}
+		os.Exit(1)
 	}
 
 	if flag.NArg() < 1 {
@@ -142,7 +149,10 @@ func main() {
 	toBeVerified.Hash = removeSigAndKey(toBeVerified.Hash)
 
 	// Get public key
-	cert := getPublicKey(toBeVerified.Domain)
+	cert, failed := getPublicKey(toBeVerified.Domain)
+	if failed {
+		os.Exit(1)
+	}
 
 	// Verify
 	checkSignature(cert, toBeVerified)
@@ -276,28 +286,33 @@ func versionedHostName(template Template, host string) string {
 
 const maxtxtlen = 255
 
-func getPublicKey(dnsName string) cachedCert {
+func getPublicKey(dnsName string) (cachedCert, bool) {
 	txtLog := log.With().Str("record", dnsName).Logger()
 	txtLog.Debug().Msg("reading public key from DNS")
 	txt, err := net.LookupTXT(dnsName)
 	if err != nil {
-		txtLog.Fatal().Err(err).Msg("public key txt lookup failed")
+		txtLog.Error().Err(err).Msg("public key txt lookup failed")
+		return cachedCert{}, true
 	}
 
 	if len(txt) == 0 {
-		txtLog.Fatal().Msg("txt lookup returned no records")
+		txtLog.Error().Msg("txt lookup returned no records")
+		return cachedCert{}, true
 	}
 
 	var allRecords []txtRecord
 	hashAlg := crypto.SHA256 // default; overridden by 'a=' field
 	scheme := schemeUnknown  // default; overridden by 'a=' field
 	uniqP := make(map[int]bool)
+	retval := false
 	for _, r := range txt {
 		if r == "" {
-			txtLog.Fatal().Msg("empty txt record")
+			txtLog.Error().Msg("empty txt record")
+			retval = true
 		}
 		if maxtxtlen < len(r) {
 			txtLog.Warn().Int("length", len(r)).Int("max", maxtxtlen).Msg("txt record is not split to short enough p= chunks")
+			retval = true
 		}
 		var record txtRecord
 		pSeen := false
@@ -306,7 +321,9 @@ func getPublicKey(dnsName string) cachedCert {
 		fields := strings.Split(r, ",")
 		for _, item := range fields {
 			if len(item) < 2 {
-				txtLog.Fatal().Str("item", item).Msg("txt record token too short")
+				txtLog.Error().Str("item", item).Msg("txt record token too short")
+				retval = true
+				goto next
 			}
 			if item[1] != '=' {
 				txtLog.Fatal().Str("item", item).Msg("txt record token missing '='")
@@ -315,10 +332,14 @@ func getPublicKey(dnsName string) cachedCert {
 			case 'p':
 				record.p, err = strconv.Atoi(item[2:])
 				if err != nil {
-					txtLog.Fatal().Err(err).Str("item", item[2:]).Msg("invalid number in txt record")
+					txtLog.Error().Err(err).Str("item", item[2:]).Msg("invalid number in txt record")
+					retval = true
+					goto next
 				}
 				if _, found := uniqP[record.p]; found {
-					txtLog.Fatal().Int("p", record.p).Msg("duplicate p number value")
+					txtLog.Error().Int("p", record.p).Msg("duplicate p number value")
+					retval = true
+					goto next
 				}
 				uniqP[record.p] = true
 				pSeen = true
@@ -357,36 +378,54 @@ func getPublicKey(dnsName string) cachedCert {
 					newHashAlg = 0
 					newScheme = schemeEd25519
 				default:
-					txtLog.Fatal().Str("algorithm", item[2:]).Msg("unexpected algorithm in txt record")
+					txtLog.Error().Str("algorithm", item[2:]).Msg("unexpected algorithm in txt record")
+					retval = true
+					goto next
 				}
 				if scheme != schemeUnknown && (scheme != newScheme || hashAlg != newHashAlg) {
-					txtLog.Fatal().Str("algorithm", item[2:]).Msg("algorithm mismatch across txt records")
+					txtLog.Error().Str("algorithm", item[2:]).Msg("algorithm mismatch across txt records")
+					retval = true
+					goto next
 				}
 				hashAlg = newHashAlg
 				scheme = newScheme
 			case 't':
 				if item[2:] != "x509" {
-					txtLog.Fatal().Str("keytoken", item[2:]).Msg("unexpected key token in txt record")
+					txtLog.Error().Str("keytoken", item[2:]).Msg("unexpected key token in txt record")
+					retval = true
+					goto next
 				}
 			case 'd':
 				record.d = item[2:]
 			default:
-				txtLog.Fatal().Str("item", item).Msg("unexpected data in txt record")
+				txtLog.Error().Str("item", item).Msg("unexpected data in txt record")
+				retval = true
+				goto next
 			}
 		}
 		if !pSeen {
-			txtLog.Fatal().Str("fragment", r).Msg("txt record fragment missing p= field")
+			txtLog.Error().Str("fragment", r).Msg("txt record fragment missing p= field")
+			retval = true
+			goto next
 		}
 		if record.d == "" {
-			txtLog.Fatal().Str("fragment", r).Msg("txt record fragment missing d= field or d= is empty")
+			txtLog.Error().Str("fragment", r).Msg("txt record fragment missing d= field or d= is empty")
+			retval = true
+			goto next
 		}
 		allRecords = append(allRecords, record)
+	next:
+	}
+	if retval {
+		return cachedCert{}, true
 	}
 	if scheme == schemeUnknown {
-		txtLog.Fatal().Msg("txt record does not define a=scheme")
+		txtLog.Error().Msg("txt record does not define a=scheme")
+		return cachedCert{}, true
 	}
 	if len(allRecords) == 0 {
-		txtLog.Fatal().Msg("txt records contain no usable key data")
+		txtLog.Error().Msg("txt records contain no usable key data")
+		return cachedCert{}, true
 	}
 
 	// DNS can and will provide records in random order, sort them
@@ -397,7 +436,7 @@ func getPublicKey(dnsName string) cachedCert {
 	pubkeyBase64 = "-----BEGIN PUBLIC KEY-----\n"
 	for i := range allRecords {
 		if allRecords[i].d == "" {
-			txtLog.Fatal().Int("p", allRecords[i].p).Msg("key fragment has empty d= value")
+			txtLog.Error().Int("p", allRecords[i].p).Msg("key fragment has empty d= value")
 		}
 		pubkeyBase64 += allRecords[i].d
 	}
@@ -406,35 +445,41 @@ func getPublicKey(dnsName string) cachedCert {
 	// Extract certificate
 	block, _ := pem.Decode([]byte(pubkeyBase64))
 	if block == nil {
-		txtLog.Fatal().Msg("public key pem decode failed")
+		txtLog.Error().Msg("public key pem decode failed")
+		return cachedCert{}, true
 	}
 	x509parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		txtLog.Fatal().Err(err).Msg("public key x509 decode failed")
+		txtLog.Error().Err(err).Msg("public key x509 decode failed")
+		return cachedCert{}, true
 	}
 
 	var pubKey crypto.PublicKey
 	switch parsedKey := x509parsed.(type) {
 	case *rsa.PublicKey:
 		if scheme != schemeRSAPKCS1 && scheme != schemeRSAPSS {
-			txtLog.Fatal().Msg("RSA key used with non-RSA algorithm")
+			txtLog.Error().Msg("RSA key used with non-RSA algorithm")
+			return cachedCert{}, true
 		}
 		pubKey = parsedKey
 	case *ecdsa.PublicKey:
 		if scheme != schemeECDSA {
-			txtLog.Fatal().Msg("ECDSA key used with non-ECDSA algorithm")
+			txtLog.Error().Msg("ECDSA key used with non-ECDSA algorithm")
+			return cachedCert{}, true
 		}
 		pubKey = parsedKey
 	case ed25519.PublicKey:
 		if scheme != schemeEd25519 {
-			txtLog.Fatal().Msg("Ed25519 key used with non-Ed25519 algorithm")
+			txtLog.Error().Msg("Ed25519 key used with non-Ed25519 algorithm")
+			return cachedCert{}, true
 		}
 		pubKey = parsedKey
 	default:
-		txtLog.Fatal().Msg("unsupported public key type")
+		txtLog.Error().Msg("unsupported public key type")
+		return cachedCert{}, true
 	}
 
-	return cachedCert{key: pubKey, scheme: scheme, hash: hashAlg}
+	return cachedCert{key: pubKey, scheme: scheme, hash: hashAlg}, false
 }
 
 func checkSignature(cert cachedCert, toBeVerified PostData) {
