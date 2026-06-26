@@ -318,8 +318,7 @@ func getPublicKey(dnsName string) (cachedCert, bool) {
 		pSeen := false
 
 		txtLog.Debug().Str("txt", r).Msg("process txt record")
-		fields := strings.Split(r, ",")
-		for _, item := range fields {
+		for item := range strings.SplitSeq(r, ",") {
 			if len(item) < 2 {
 				txtLog.Error().Str("item", item).Msg("txt record token too short")
 				retval = true
